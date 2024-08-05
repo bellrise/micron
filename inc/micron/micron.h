@@ -6,12 +6,14 @@
 
 #include <micron/version.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uintptr_t uptr;
+typedef size_t usize;
 
 typedef int8_t i8;
 typedef int16_t i16;
@@ -29,5 +31,19 @@ typedef intptr_t iptr;
 #ifndef __packed
 # define __packed __attribute__((packed))
 #endif
+
+#ifndef __aligned
+# define __aligned(x) __attribute__((__aligned__(x)))
+#endif
+
+static inline i32 imax(i32 a, i32 b)
+{
+    return a >= b ? a : b;
+}
+
+static inline i32 imin(i32 a, i32 b)
+{
+    return a <= b ? a : b;
+}
 
 #endif /* MICRON_H */

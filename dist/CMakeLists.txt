@@ -26,7 +26,7 @@ add_executable(${PROJECT} ${SOURCES})
 
 target_compile_options(${PROJECT} PRIVATE -Wall -Wextra)
 target_link_libraries(${PROJECT} pico_cyw43_arch_lwip_poll
-    pico_stdlib)
+    pico_stdlib pico_multicore pico_util)
 target_include_directories(${PROJECT} PRIVATE ../inc
     ../build/include)
 

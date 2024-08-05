@@ -6,10 +6,12 @@
 #include <lwip/raw.h>
 #include <lwip/tcp.h>
 #include <micron/buildconfig.h>
+#include <micron/micron.h>
 #include <micron/net.h>
 #include <micron/syslog.h>
 #include <netif/ethernet.h>
 #include <pico/cyw43_arch.h>
+#include <pico/multicore.h>
 
 static int wifi_scan_callback(struct net *net,
                               const cyw43_ev_scan_result_t *result)
@@ -139,18 +141,23 @@ static u8 icmp_recv(struct net *net, struct raw_pcb *block, struct pbuf *packet,
     struct icmp_hdr *icmp;
     struct pbuf *reply;
     u32 payload_len;
+    u32 icmp_size;
+    u32 ip_size;
     u32 rq_data;
+
+    icmp_size = sizeof(struct icmp_hdr);
+    ip_size = sizeof(struct ip_hdr);
 
     /* Drop any packets that are not from the same network and that have
        a strange size. */
 
     if (!netfilter_same_network(net, remote_addr))
         goto drop;
-    if (packet->len < sizeof(struct ip_hdr) + sizeof(struct icmp_hdr))
+    if (packet->len < ip_size + icmp_size)
         goto drop;
 
-    icmp = packet->payload + sizeof(struct ip_hdr);
-    payload_len = packet->len - sizeof(struct ip_hdr) - sizeof(struct icmp_hdr);
+    icmp = packet->payload + ip_size;
+    payload_len = packet->len - ip_size - icmp_size;
     rq_data = icmp->data;
 
     /* Reply only to echo requests. */
@@ -158,7 +165,7 @@ static u8 icmp_recv(struct net *net, struct raw_pcb *block, struct pbuf *packet,
     if (icmp->type != ICMP_ECHO)
         goto drop;
 
-    reply = pbuf_alloc(PBUF_IP, packet->len - sizeof(struct ip_hdr), PBUF_RAM);
+    reply = pbuf_alloc(PBUF_IP, packet->len - ip_size, PBUF_RAM);
     icmp = reply->payload;
 
     /* Echo reply, send back the same data & payload as the request. */
@@ -168,11 +175,10 @@ static u8 icmp_recv(struct net *net, struct raw_pcb *block, struct pbuf *packet,
     icmp->chksum = 0;
     icmp->code = 0;
 
-    memcpy(reply->payload + sizeof(struct icmp_hdr),
-           packet->payload + sizeof(struct ip_hdr) + sizeof(struct icmp_hdr),
+    memcpy(reply->payload + icmp_size, packet->payload + icmp_size + ip_size,
            payload_len);
 
-    icmp->chksum = inet_chksum(icmp, sizeof(struct icmp_hdr) + payload_len);
+    icmp->chksum = inet_chksum(icmp, icmp_size + payload_len);
     raw_sendto(block, reply, remote_addr);
     pbuf_free(reply);
 
@@ -196,11 +202,198 @@ static void icmp_serve(struct net *net)
     syslog("icmp: Serving ICMP packets");
 }
 
-i32 net_init(struct net *net)
+static struct net __micron_net;
+
+static i8 netsock_tcp_recv(struct netsock *__unused sock,
+                           struct tcp_pcb *__unused tcp, struct pbuf *packet,
+                           i8 __unused err)
 {
+    if (!packet) {
+        syslog("netsock_tcp: closed connection");
+        return 0;
+    }
+
+    syslog("netsock_tcp: recv len=%d tot_len=%d", packet->len, packet->tot_len);
+    pbuf_free(packet);
+
+    tcp_recved(tcp, packet->len);
+    return 0;
+}
+
+static i8 netsock_tcp_connected(struct netsock *__unused sock,
+                                struct tcp_pcb *tcp, i8 __unused err)
+{
+    syslog("netsock_tcp: connected to %s:%d", ipaddr_ntoa(&tcp->remote_ip),
+           tcp->remote_port, tcp->flags);
+    return 0;
+}
+
+static void netsock_tcp_err(struct netsock *__unused sock, i8 err)
+{
+    syslog("netsock_tcp: spectacular failure (%d)", err);
+}
+
+static i8 netsock_tcp_poll(struct netsock *__unused sock,
+                           struct tcp_pcb *__unused tcp)
+{
+    return 0;
+}
+
+static void netctrl_socket(struct net *net)
+{
+    struct netsock *sock;
+    uptr nullptr;
+
+    /* socket() -> sock */
+
+    /* Create the netsock structure. */
+
+    sock = malloc(sizeof(*sock));
+    sock->tmpbuf = malloc(MICRON_CONFIG_NET_RWBUF);
+    sock->id = ++net->last_netsock_id;
+    sock->addr.addr = 0;
+    sock->port = 0;
+    queue_init(&sock->rbuf, sizeof(u8), MICRON_CONFIG_NET_RWBUF);
+    queue_init(&sock->wbuf, sizeof(u8), MICRON_CONFIG_NET_RWBUF);
+
+    /* Create the TCP control block. */
+
+    if (!(sock->tcp = tcp_new_ip_type(IPADDR_TYPE_V4)))
+        goto err;
+
+    tcp_arg(sock->tcp, sock);
+    tcp_err(sock->tcp, (tcp_err_fn) netsock_tcp_err);
+    tcp_recv(sock->tcp, (tcp_recv_fn) netsock_tcp_recv);
+    tcp_poll(sock->tcp, (tcp_poll_fn) netsock_tcp_poll, 10);
+
+    /* Save the netsock in the socket list, so we can access it later,
+       and send it to the user. */
+
+    net->socks[net->last_netsock_id - 1] = sock;
+    queue_add_blocking(&net->ctrlres, &sock);
+
+    syslog("netsock_tcp: socket created");
+    return;
+
+err:
+    queue_free(&sock->rbuf);
+    queue_free(&sock->wbuf);
+    net->last_netsock_id--;
+    free(sock->tmpbuf);
+    free(sock);
+
+    nullptr = 0;
+    queue_add_blocking(&net->ctrlres, &nullptr);
+}
+
+static void netctrl_connect(struct net *net)
+{
+    struct netsock *sock;
+    iptr err;
+
+    /* connect(sock, ip, port) -> err */
+
+    queue_remove_blocking(&net->netctrl, &sock);
+    queue_remove_blocking(&net->netctrl, &sock->addr.addr);
+    queue_remove_blocking(&net->netctrl, &sock->port);
+
+    err = tcp_connect(sock->tcp, &sock->addr, sock->port,
+                      (tcp_connected_fn) netsock_tcp_connected);
+    if (err)
+        syslog("netsock_tcp: connect failed (%d)", err);
+
+    queue_add_blocking(&net->ctrlres, &err);
+}
+
+static void netctrl_bind(struct net *__unused net)
+{
+    // TODO: netctrl_bind
+
+    /* bind(sock, ip, port) -> err */
+}
+
+static void collect_netctrl(struct net *net)
+{
+    u32 cmd;
+
+    if (queue_is_empty(&net->netctrl))
+        return;
+
+    queue_remove_blocking(&net->netctrl, &cmd);
+    switch (cmd) {
+    case NC_SOCKET:
+        netctrl_socket(net);
+        break;
+    case NC_CONNECT:
+        netctrl_connect(net);
+        break;
+    case NC_BIND:
+        netctrl_bind(net);
+    }
+}
+
+static void sock_send_data(struct netsock *sock)
+{
+    u32 len;
+
+    /* Move data from the write buffer into the TCP/IP stack. Note that we
+       cannot send more data that can fit into the TCP queue, so the rest
+       just stays our wbuf queue and blocks. */
+
+    len = imin(tcp_sndbuf(sock->tcp), queue_get_level(&sock->wbuf));
+
+    syslog("netsock_tcp: sending %u bytes", len);
+
+    for (u32 i = 0; i < len; i++)
+        queue_remove_blocking(&sock->wbuf, &sock->tmpbuf[i]);
+
+    tcp_write(sock->tcp, sock->tmpbuf, len, 0);
+}
+
+static void send_data(struct net *net)
+{
+    struct netsock *sock;
+
+    for (u32 i = 0; i < net->last_netsock_id; i++) {
+        if (!net->socks[i])
+            continue;
+        sock = net->socks[i];
+        if (queue_get_level(&sock->wbuf))
+            sock_send_data(sock);
+    }
+}
+
+static void net_thread()
+{
+    struct net *net;
+
+    net = &__micron_net;
+
+    icmp_serve(net);
+
+    /* Continuously poll for events on the network interface, because we should
+       be running on the other core. Apart from working the IP stack, collect
+       netctrl commands, and move data from the queues onto the TCP/IP stack. */
+
+    while (1) {
+        collect_netctrl(net);
+        send_data(net);
+        cyw43_arch_poll();
+        cyw43_arch_wait_for_work_until(make_timeout_time_ms(1000));
+    }
+}
+
+i32 net_init()
+{
+    struct net *net;
+
+    net = &__micron_net;
     memset(net, 0, sizeof(*net));
 
     net->w_ssid = MICRON_CONFIG_NET_SSID;
+    net->last_netsock_id = 0;
+    queue_init(&net->netctrl, sizeof(uptr), 32);
+    queue_init(&net->ctrlres, sizeof(uptr), 32);
 
     if (cyw43_arch_init()) {
         syslog(LOG_ERR "Failed to initialize cyw43 device");
@@ -213,15 +406,77 @@ i32 net_init(struct net *net)
     }
 
     print_ifaces();
-
     net->iface = netif_default;
-    icmp_serve(net);
+
+    multicore_launch_core1(net_thread);
 
     return 0;
 }
 
-i32 net_close(struct net *__unused net)
+static void netctrl(uptr cmd, void *args, usize n_args, void *res, usize n_res)
 {
-    cyw43_arch_deinit();
-    return 0;
+    /* Communication between the main thread and the network thread is done by
+       using command queues. The user can send a command, like NC_SOCKET to
+       create a socket - and the network queue will allocate and initialize
+       the new socket once it has some time (isn't doing anything else).
+
+       Then, it sends the result (in this case, a single pointer to a struct
+       netsock) to the ctrlres queue. */
+
+    queue_add_blocking(&__micron_net.netctrl, &cmd);
+    for (usize i = 0; i < n_args; i++)
+        queue_add_blocking(&__micron_net.netctrl, &((uptr *) args)[i]);
+    for (usize i = 0; i < n_res; i++)
+        queue_remove_blocking(&__micron_net.ctrlres, &((uptr *) res)[i]);
+}
+
+struct netsock *socket()
+{
+    struct netsock *sock;
+
+    netctrl(NC_SOCKET, NULL, 0, &sock, 1);
+
+    return sock;
+}
+
+i32 connect(struct netsock *sock, ip_addr_t ip, u16 port)
+{
+    uptr args[3];
+    uptr res;
+
+    args[0] = (uptr) sock;
+    args[1] = (uptr) ip.addr;
+    args[2] = port;
+
+    netctrl(NC_CONNECT, args, 3, &res, 1);
+
+    return res;
+}
+
+i32 bind(struct netsock *sock, ip_addr_t ip, u16 port)
+{
+    uptr args[3];
+    uptr res;
+
+    args[0] = (uptr) sock;
+    args[1] = (uptr) ip.addr;
+    args[2] = port;
+
+    netctrl(NC_BIND, args, 3, &res, 1);
+
+    return res;
+}
+
+usize net_read(struct netsock *sock, void *buffer, usize size)
+{
+    for (usize i = 0; i < size; i++)
+        queue_remove_blocking(&sock->rbuf, &((u8 *) buffer)[i]);
+    return size;
+}
+
+usize net_write(struct netsock *sock, void *buffer, usize size)
+{
+    for (usize i = 0; i < size; i++)
+        queue_add_blocking(&sock->wbuf, &((u8 *) buffer)[i]);
+    return size;
 }

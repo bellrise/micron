@@ -12,7 +12,7 @@
 #include <pico/time.h>
 
 struct meminfo __micron_meminfo;
-struct net __micron_net;
+extern void user_main();
 
 int main()
 {
@@ -29,18 +29,10 @@ int main()
     /* Initialize the system */
 
     heap_init(&__micron_meminfo);
-    net_init(&__micron_net);
-
-    /* Enter the userland */
-
-    syslog("Starting userland");
-    extern void user_main();
+    net_init();
     user_main();
 
-    /* Exit the system */
-
-    net_close(&__micron_net);
-    heap_close(&__micron_meminfo);
+    /* If we happen to exit user mode, just reboot the board. */
 
     reset_usb_boot(0, 0);
 }

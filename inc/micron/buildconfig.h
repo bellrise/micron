@@ -16,6 +16,7 @@
 #ifndef MICRON_CONFIG_NET
 # define MICRON_CONFIG_NET_SSID   "" /* auto-connect network SSID */
 # define MICRON_CONFIG_NET_PASSWD "" /* auto-connect network passwd */
+# define MICRON_CONFIG_NET_RWBUF  256
 # define MICRON_CONFIG_NET        1
 #endif /* MICRON_CONFIG_NET */
 
