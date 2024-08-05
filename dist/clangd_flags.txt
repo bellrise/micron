@@ -69,3 +69,4 @@
 -I./inc
 -Wall
 -Wextra
+-DPICO_CYW43_ARCH_POLL=1

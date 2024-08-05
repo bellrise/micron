@@ -2,13 +2,14 @@
 # Copyright (c) 2024 bellrise
 
 VER_MAJ := 0
-VER_MIN := 1
+VER_MIN := 2
 
 
 __all: firmware
 
 
 firmware: build
+	dist/mkversion $(VER_MAJ) $(VER_MIN) > inc/micron/version.h
 	make --no-print-directory -j $(shell nproc) -C build
 
 
@@ -16,7 +17,6 @@ build:
 	mkdir -p build
 	cmake -S dist -B build
 	mkdir -p build/include
-	dist/mkversion $(VER_MAJ) $(VER_MIN) > inc/micron/version.h
 	dist/mkbuildconfig > build/include/micron_genconfig.h
 	cp dist/lwipopts.h build/include/lwipopts.h
 

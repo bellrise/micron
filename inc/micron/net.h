@@ -4,15 +4,17 @@
 #ifndef MICRON_NET_H
 #define MICRON_NET_H 1
 
+#include <lwip/netif.h>
 #include <micron/micron.h>
 #include <netif/ethernet.h>
 
 struct net
 {
-    const char *ssid;
-    struct eth_addr bssid;
-    i32 wcn_found_networks;
-    bool wcn_connected;
+    struct netif *iface;     /* lwip interface */
+    const char *w_ssid;      /* wlan SSID */
+    struct eth_addr w_bssid; /* wlan BSSID */
+    i32 w_found_networks;    /* wlan found matching networks */
+    bool w_connected;        /* true for connected wlan */
 };
 
 i32 net_init(struct net *net);
