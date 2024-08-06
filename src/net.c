@@ -204,20 +204,41 @@ static void icmp_serve(struct net *net)
 
 static struct net __micron_net;
 
-static i8 netsock_tcp_recv(struct netsock *__unused sock,
-                           struct tcp_pcb *__unused tcp, struct pbuf *packet,
-                           i8 __unused err)
+static i8 netsock_tcp_recv(struct netsock *sock, struct tcp_pcb *__unused tcp,
+                           struct pbuf *packet, i8 __unused err)
 {
+    u32 to_read;
+
     if (!packet) {
+        sock->connected = false;
         syslog("netsock_tcp: closed connection");
         return 0;
     }
 
-    syslog("netsock_tcp: recv len=%d tot_len=%d", packet->len, packet->tot_len);
-    pbuf_free(packet);
+    /* Because we have a limited amount of space in the read buffer, we can only
+       read so many bytes. If we don't consume the whole packet at once, store
+       the offset in the netsock and return INPROGRESS to notify lwip about our
+       intention to read the packet again later. */
 
-    tcp_recved(tcp, packet->len);
-    return 0;
+    to_read = imin(packet->len - sock->packet_read_offset,
+                   sock->rbuf.element_count - queue_get_level(&sock->rbuf));
+    pbuf_copy_partial(packet, sock->tmpbuf, to_read, sock->packet_read_offset);
+    tcp_recved(tcp, to_read);
+
+    for (u32 i = 0; i < to_read; i++)
+        queue_add_blocking(&sock->rbuf, &((u8 *) sock->tmpbuf)[i]);
+
+    /* Once we read the whole packet, free it and return OK. */
+
+    if (packet->len == to_read + sock->packet_read_offset) {
+        sock->packet_read_offset = 0;
+        pbuf_free(packet);
+        return ERR_OK;
+    }
+
+    sock->packet_read_offset += to_read;
+
+    return ERR_INPROGRESS;
 }
 
 static i8 netsock_tcp_connected(struct netsock *__unused sock,
@@ -230,12 +251,62 @@ static i8 netsock_tcp_connected(struct netsock *__unused sock,
 
 static void netsock_tcp_err(struct netsock *__unused sock, i8 err)
 {
-    syslog("netsock_tcp: spectacular failure (%d)", err);
+    syslog("netsock_tcp: TCP/IP failure (%d)", err);
 }
 
-static i8 netsock_tcp_poll(struct netsock *__unused sock,
-                           struct tcp_pcb *__unused tcp)
+static struct netsock *netsock_create(struct net *net)
 {
+    struct netsock *sock;
+
+    sock = malloc(sizeof(*sock));
+    sock->tmpbuf = malloc(MICRON_CONFIG_NET_RWBUF);
+    sock->id = ++net->last_netsock_id;
+    sock->addr.addr = 0;
+    sock->port = 0;
+    sock->connected = false;
+    sock->packet_read_offset = 0;
+    sock->net = net;
+    queue_init(&sock->rbuf, sizeof(u8), MICRON_CONFIG_NET_RWBUF);
+    queue_init(&sock->wbuf, sizeof(u8), MICRON_CONFIG_NET_RWBUF);
+    queue_init(&sock->waiting_client, sizeof(uptr), 1);
+
+    return sock;
+}
+
+static i8 netsock_tcp_accept(struct netsock *sock, struct tcp_pcb *tcp_client,
+                             i8 __unused err)
+{
+    struct netsock *client;
+
+    /* Accept the connection only if the netsock is waiting for a client,
+       otherwise drop it. */
+
+    if (!sock->waiting_for_client) {
+        tcp_close(tcp_client);
+        return ERR_CLSD;
+    }
+
+    /* Create the new client netsock, and return it to the user by pushing
+       it onto the waiting_client queue. */
+
+    client = netsock_create(sock->net);
+    client->addr.addr = tcp_client->remote_ip.addr;
+    client->port = tcp_client->remote_port;
+    client->tcp = tcp_client;
+    client->connected = true;
+
+    tcp_arg(tcp_client, client);
+    tcp_err(tcp_client, (tcp_err_fn) netsock_tcp_err);
+    tcp_recv(tcp_client, (tcp_recv_fn) netsock_tcp_recv);
+
+    sock->net->socks[sock->net->last_netsock_id - 1] = client;
+
+    queue_add_blocking(&sock->waiting_client, &client);
+    sock->waiting_for_client = false;
+
+    syslog("netsock_tcp: client %s:%d connected", ipaddr_ntoa(&client->addr),
+           client->port);
+
     return 0;
 }
 
@@ -248,13 +319,7 @@ static void netctrl_socket(struct net *net)
 
     /* Create the netsock structure. */
 
-    sock = malloc(sizeof(*sock));
-    sock->tmpbuf = malloc(MICRON_CONFIG_NET_RWBUF);
-    sock->id = ++net->last_netsock_id;
-    sock->addr.addr = 0;
-    sock->port = 0;
-    queue_init(&sock->rbuf, sizeof(u8), MICRON_CONFIG_NET_RWBUF);
-    queue_init(&sock->wbuf, sizeof(u8), MICRON_CONFIG_NET_RWBUF);
+    sock = netsock_create(net);
 
     /* Create the TCP control block. */
 
@@ -264,7 +329,6 @@ static void netctrl_socket(struct net *net)
     tcp_arg(sock->tcp, sock);
     tcp_err(sock->tcp, (tcp_err_fn) netsock_tcp_err);
     tcp_recv(sock->tcp, (tcp_recv_fn) netsock_tcp_recv);
-    tcp_poll(sock->tcp, (tcp_poll_fn) netsock_tcp_poll, 10);
 
     /* Save the netsock in the socket list, so we can access it later,
        and send it to the user. */
@@ -272,7 +336,7 @@ static void netctrl_socket(struct net *net)
     net->socks[net->last_netsock_id - 1] = sock;
     queue_add_blocking(&net->ctrlres, &sock);
 
-    syslog("netsock_tcp: socket created");
+    syslog("netsock_tcp: new netsock=%d", sock->id);
     return;
 
 err:
@@ -302,14 +366,52 @@ static void netctrl_connect(struct net *net)
     if (err)
         syslog("netsock_tcp: connect failed (%d)", err);
 
+    sock->connected = true;
     queue_add_blocking(&net->ctrlres, &err);
 }
 
-static void netctrl_bind(struct net *__unused net)
+static void netctrl_bind(struct net *net)
 {
-    // TODO: netctrl_bind
+    struct netsock *sock;
+    iptr nerr;
+    i8 err;
 
     /* bind(sock, ip, port) -> err */
+
+    queue_remove_blocking(&net->netctrl, &sock);
+    queue_remove_blocking(&net->netctrl, &sock->addr.addr);
+    queue_remove_blocking(&net->netctrl, &sock->port);
+
+    err = tcp_bind(sock->tcp, &sock->addr, sock->port);
+    if (err)
+        syslog("netsock_tcp: bind failed (%d)", err);
+
+    sock->tcp = tcp_listen_with_backlog_and_err(sock->tcp, 1, &err);
+    if (!sock->tcp)
+        syslog("netsock_tcp: listen failed (%d)", err);
+
+    syslog("netctrl: bind+listen netsock=%d %s:%d", sock->id,
+           ipaddr_ntoa(&sock->addr), sock->port);
+
+    tcp_arg(sock->tcp, sock);
+    tcp_accept(sock->tcp, (tcp_accept_fn) netsock_tcp_accept);
+
+    nerr = err;
+    queue_add_blocking(&net->ctrlres, &nerr);
+}
+
+static void netctrl_accept(struct net *net)
+{
+    struct netsock *server;
+
+    /* accept(sock) -> sock */
+
+    queue_remove_blocking(&net->netctrl, &server);
+    server->waiting_for_client = true;
+
+    /* We don't wait for the client connection here, because we have other
+       important things to do - return the client once it actually has
+       connected, blocking the main thread until something happens. */
 }
 
 static void collect_netctrl(struct net *net)
@@ -329,6 +431,10 @@ static void collect_netctrl(struct net *net)
         break;
     case NC_BIND:
         netctrl_bind(net);
+        break;
+    case NC_ACCEPT:
+        netctrl_accept(net);
+        break;
     }
 }
 
@@ -366,6 +472,7 @@ static void send_data(struct net *net)
 static void net_thread()
 {
     struct net *net;
+    i32 link;
 
     net = &__micron_net;
 
@@ -376,16 +483,23 @@ static void net_thread()
        netctrl commands, and move data from the queues onto the TCP/IP stack. */
 
     while (1) {
+        link = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+        if (link != CYW43_LINK_UP) {
+            syslog(LOG_ERR "link changed: %d", link);
+            break;
+        }
+
         collect_netctrl(net);
         send_data(net);
         cyw43_arch_poll();
-        cyw43_arch_wait_for_work_until(make_timeout_time_ms(1000));
+        cyw43_arch_wait_for_work_until(make_timeout_time_ms(100));
     }
 }
 
 i32 net_init()
 {
     struct net *net;
+    u32 power_mode;
 
     net = &__micron_net;
     memset(net, 0, sizeof(*net));
@@ -395,10 +509,17 @@ i32 net_init()
     queue_init(&net->netctrl, sizeof(uptr), 32);
     queue_init(&net->ctrlres, sizeof(uptr), 32);
 
-    if (cyw43_arch_init()) {
+    if (cyw43_arch_init_with_country(CYW43_COUNTRY_POLAND)) {
         syslog(LOG_ERR "Failed to initialize cyw43 device");
         return 1;
     }
+
+    /* We need to disable power-saving mode in order to keep any connection
+       open. For some reason keeping the default powersaving mode just disables
+       the whole interface after some time. */
+
+    power_mode = cyw43_pm_value(CYW43_NO_POWERSAVE_MODE, 0, 0, 0, 0);
+    cyw43_wifi_pm(&cyw43_state, power_mode);
 
     if (wifi_connect(net)) {
         syslog("Failed to connect to Wi-Fi");
@@ -411,6 +532,11 @@ i32 net_init()
     multicore_launch_core1(net_thread);
 
     return 0;
+}
+
+ip_addr_t net_iface_ip()
+{
+    return __micron_net.iface->ip_addr;
 }
 
 static void netctrl(uptr cmd, void *args, usize n_args, void *res, usize n_res)
@@ -467,6 +593,16 @@ i32 bind(struct netsock *sock, ip_addr_t ip, u16 port)
     return res;
 }
 
+struct netsock *accept(struct netsock *sock)
+{
+    struct netsock *client;
+
+    netctrl(NC_ACCEPT, &sock, 1, NULL, 0);
+    queue_remove_blocking(&sock->waiting_client, &client);
+
+    return client;
+}
+
 usize net_read(struct netsock *sock, void *buffer, usize size)
 {
     for (usize i = 0; i < size; i++)
@@ -474,7 +610,7 @@ usize net_read(struct netsock *sock, void *buffer, usize size)
     return size;
 }
 
-usize net_write(struct netsock *sock, void *buffer, usize size)
+usize net_write(struct netsock *sock, const void *buffer, usize size)
 {
     for (usize i = 0; i < size; i++)
         queue_add_blocking(&sock->wbuf, &((u8 *) buffer)[i]);

@@ -2,7 +2,7 @@
 # Copyright (c) 2024 bellrise
 
 VER_MAJ := 0
-VER_MIN := 3
+VER_MIN := 4
 
 
 __all: firmware
