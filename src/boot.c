@@ -24,7 +24,7 @@ int main()
     while (!stdio_usb_connected())
         sleep_ms(50);
 
-    syslog(LOG_INFO "Micron " MICRON_STRVER);
+    syslog(LOG_BOLD "Micron " MICRON_STRVER);
 
     /* Initialize the system */
 

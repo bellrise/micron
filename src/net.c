@@ -30,7 +30,7 @@ static int wifi_scan_callback(struct net *net,
     }
 
     offset[-1] = 0;
-    syslog("wifi_scan: ssid %s bssid %s", result->ssid, mac);
+    syslog(LOG_NOTE "wifi: ssid '%s' bssid %s", result->ssid, mac);
 
     if (!strcmp((const char *) result->ssid, net->w_ssid))
         net->w_found_networks++;
@@ -336,7 +336,6 @@ static void netctrl_socket(struct net *net)
     net->socks[net->last_netsock_id - 1] = sock;
     queue_add_blocking(&net->ctrlres, &sock);
 
-    syslog("netsock_tcp: new netsock=%d", sock->id);
     return;
 
 err:
@@ -390,8 +389,7 @@ static void netctrl_bind(struct net *net)
     if (!sock->tcp)
         syslog("netsock_tcp: listen failed (%d)", err);
 
-    syslog("netctrl: bind+listen netsock=%d %s:%d", sock->id,
-           ipaddr_ntoa(&sock->addr), sock->port);
+    syslog("netctrl: bind+listen %s:%d", ipaddr_ntoa(&sock->addr), sock->port);
 
     tcp_arg(sock->tcp, sock);
     tcp_accept(sock->tcp, (tcp_accept_fn) netsock_tcp_accept);
@@ -448,8 +446,6 @@ static void sock_send_data(struct netsock *sock)
 
     len = imin(tcp_sndbuf(sock->tcp), queue_get_level(&sock->wbuf));
 
-    syslog("netsock_tcp: sending %u bytes", len);
-
     for (u32 i = 0; i < len; i++)
         queue_remove_blocking(&sock->wbuf, &sock->tmpbuf[i]);
 
@@ -473,6 +469,7 @@ static void net_thread()
 {
     struct net *net;
     i32 link;
+    i32 rssi;
 
     net = &__micron_net;
 
@@ -483,23 +480,27 @@ static void net_thread()
        netctrl commands, and move data from the queues onto the TCP/IP stack. */
 
     while (1) {
-        link = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
-        if (link != CYW43_LINK_UP) {
-            syslog(LOG_ERR "link changed: %d", link);
+        link = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
+        if (link < 0) {
+            syslog(LOG_ERR "wifi: link changed: %d", link);
             break;
         }
+
+        /* WARNING: this line is very important - it seems like it isn't doing
+           much, but not checking the connection RSSI will end up stopping all
+           network traffic from reaching interface. :( */
+        cyw43_wifi_get_rssi(&cyw43_state, &rssi);
 
         collect_netctrl(net);
         send_data(net);
         cyw43_arch_poll();
-        cyw43_arch_wait_for_work_until(make_timeout_time_ms(100));
+        cyw43_arch_wait_for_work_until(make_timeout_time_ms(50));
     }
 }
 
 i32 net_init()
 {
     struct net *net;
-    u32 power_mode;
 
     net = &__micron_net;
     memset(net, 0, sizeof(*net));
@@ -513,13 +514,6 @@ i32 net_init()
         syslog(LOG_ERR "Failed to initialize cyw43 device");
         return 1;
     }
-
-    /* We need to disable power-saving mode in order to keep any connection
-       open. For some reason keeping the default powersaving mode just disables
-       the whole interface after some time. */
-
-    power_mode = cyw43_pm_value(CYW43_NO_POWERSAVE_MODE, 0, 0, 0, 0);
-    cyw43_wifi_pm(&cyw43_state, power_mode);
 
     if (wifi_connect(net)) {
         syslog("Failed to connect to Wi-Fi");
