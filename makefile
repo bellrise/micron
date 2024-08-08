@@ -4,30 +4,33 @@
 VER_MAJ := 0
 VER_MIN := 4
 
+GENCONF  := build/include/micron_genconfig.h
+LWIPCONF := build/include/lwipopts.h
+
 
 __all: firmware
 
 
-firmware: build
+firmware: build $(GENCONF) $(LWIPCONF)
 	make --no-print-directory -j $(shell nproc) -C build
-
 
 build:
 	mkdir -p build
 	cmake -S dist -B build
 	mkdir -p build/include
-	dist/mkbuildconfig > build/include/micron_genconfig.h
 	dist/mkversion $(VER_MAJ) $(VER_MIN) > inc/micron/version.h
+
+$(LWIPCONF): dist/lwipopts.h
 	cp dist/lwipopts.h build/include/lwipopts.h
 
+$(GENCONF): dist/default.config dist/local.config
+	dist/mkgenconfig > $@
 
 clean:
 	rm -rf build
 
-
 setupclangd:
 	cat dist/clangd_flags.txt | sed "s;{{PICO_SDK}};$(PICO_SDK_PATH);g" > compile_flags.txt
-
 
 usbdebug:
 	picotool load build/micron.uf2 -f

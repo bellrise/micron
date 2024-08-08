@@ -5,8 +5,9 @@
 #define MICRON_SYSLOG_H 1
 
 #define LOG_ERR  "\033[1;31m"
-#define LOG_INFO "\033[1;37m"
+#define LOG_BOLD "\033[1;37m"
 #define LOG_WARN "\033[1;33m"
+#define LOG_NOTE "\033[90m"
 
 /**
  * syslog
