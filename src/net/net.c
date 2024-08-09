@@ -523,6 +523,9 @@ i32 net_init()
 {
     struct net *net;
 
+    if (!MICRON_CONFIG_NET)
+        return 0;
+
     /* Initialize the network stack, and connect to Wi-Fi. */
 
     net = &__micron_net;

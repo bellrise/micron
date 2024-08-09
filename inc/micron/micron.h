@@ -36,6 +36,10 @@ typedef intptr_t iptr;
 # define __aligned(x) __attribute__((__aligned__(x)))
 #endif
 
+#ifndef __printflike
+# define __printflike(...)
+#endif
+
 static inline i32 imax(i32 a, i32 b)
 {
     return a >= b ? a : b;

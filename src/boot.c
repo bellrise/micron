@@ -1,6 +1,7 @@
 /* Micron - main.c
    Copyright (c) 2024 bellrise */
 
+#include <micron/buildconfig.h>
 #include <micron/mem.h>
 #include <micron/micron.h>
 #include <micron/net.h>
@@ -20,7 +21,7 @@ int main()
     stdio_filter_driver(&stdio_usb);
     stdio_set_translate_crlf(&stdio_usb, false);
 
-    while (!stdio_usb_connected())
+    while (MICRON_CONFIG_WAITUSB && !stdio_usb_connected())
         sleep_ms(50);
 
     syslog(LOG_BOLD "Micron " MICRON_STRVER);
