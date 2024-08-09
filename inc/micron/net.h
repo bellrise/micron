@@ -20,6 +20,8 @@ struct net
     queue_t ctrlres;         /* reply queue */
     u32 last_netsock_id;
     struct netsock *socks[32]; /* open netsocks */
+    u32 netsock_rx;            /* RX on netsocks */
+    u32 netsock_tx;            /* TX on netsocks */
 };
 
 struct netsock
@@ -44,6 +46,13 @@ enum netctrl_cmd
     NC_CONNECT = 2, /* connect(sock, ip, port) -> i32 */
     NC_BIND = 3,    /* bind(sock, ip, port) -> i32 */
     NC_ACCEPT = 4,  /* accept(sock) -> sock */
+    NC_STAT = 5,    /* xstat(value) -> u32 */
+};
+
+enum netctrl_stat
+{
+    NCSTAT_RX = 1, /* received bytes */
+    NCSTAT_TX = 2, /* send bytes */
 };
 
 /* Initialize the TCP/IP stack, and start the network thread on
@@ -56,6 +65,9 @@ struct netsock *socket();
 i32 connect(struct netsock *, ip_addr_t ip, u16 port);
 i32 bind(struct netsock *, ip_addr_t ip, u16 port);
 struct netsock *accept(struct netsock *);
+
+u32 net_rx();
+u32 net_tx();
 
 usize net_read(struct netsock *, void *buffer, usize size);
 usize net_write(struct netsock *, const void *buffer, usize size);

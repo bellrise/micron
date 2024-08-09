@@ -11,6 +11,7 @@
 #define MEM_ALIGNMENT              4
 #define MEMP_NUM_TCP_SEG           32
 #define MEMP_NUM_ARP_QUEUE         10
+#define ARP_TABLE_SIZE             32
 #define PBUF_POOL_SIZE             24
 #define LWIP_ARP                   1
 #define LWIP_ETHERNET              1
@@ -39,6 +40,8 @@
 #define DHCP_DOES_ARP_CHECK        0
 #define LWIP_DHCP_DOES_ACD_CHECK   0
 #define ARP_QUEUEING               1
+
+#define LWIP_DEBUG 0
 
 #define ETHARP_DEBUG     LWIP_DBG_OFF
 #define NETIF_DEBUG      LWIP_DBG_OFF

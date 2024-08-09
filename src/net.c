@@ -4,6 +4,7 @@
 #include <lwip/icmp.h>
 #include <lwip/inet_chksum.h>
 #include <lwip/raw.h>
+#include <lwip/stats.h>
 #include <lwip/tcp.h>
 #include <micron/buildconfig.h>
 #include <micron/micron.h>
@@ -75,10 +76,8 @@ static i32 wifi_connect(struct net *net)
 
     err = cyw43_arch_wifi_connect_timeout_ms(
         net->w_ssid, MICRON_CONFIG_NET_PASSWD, CYW43_AUTH_WPA2_AES_PSK, 10000);
-    if (err) {
-        syslog("Failed to connect to Wi-Fi network");
+    if (err)
         return 1;
-    }
 
     syslog("Connected to '%s' network", net->w_ssid);
     net->w_connected = true;
@@ -120,23 +119,19 @@ static void print_ifaces()
     }
 }
 
-static bool netfilter_same_network(struct net *net, const ip_addr_t *remote)
+static bool netfilter_from_lan(const ip_addr_t *remote)
 {
-    u32 network;
+    /* Check for 192.168.0.0/16 or 10.0.0.0/8 addresses. */
 
-    /* The most basic of net filters: allow only IP addresses coming from the
-       same network. */
-
-    network = net->iface->ip_addr.addr & net->iface->netmask.addr;
-    return network == (remote->addr & net->iface->netmask.addr);
+    return (remote->addr & 0xffff) == 0xa8c0 || (remote->addr & 0xff) == 10;
 }
 
 /**
  * Callback when receiving ICMP packets. Allows only ICMP requests from the same
  * network, and only ECHO REQUEST packets. The rest is dropped.
  */
-static u8 icmp_recv(struct net *net, struct raw_pcb *block, struct pbuf *packet,
-                    const ip_addr_t *remote_addr)
+static u8 icmp_recv(struct net *__unused net, struct raw_pcb *block,
+                    struct pbuf *packet, const ip_addr_t *remote_addr)
 {
     struct icmp_hdr *icmp;
     struct pbuf *reply;
@@ -151,7 +146,7 @@ static u8 icmp_recv(struct net *net, struct raw_pcb *block, struct pbuf *packet,
     /* Drop any packets that are not from the same network and that have
        a strange size. */
 
-    if (!netfilter_same_network(net, remote_addr))
+    if (!netfilter_from_lan(remote_addr))
         goto drop;
     if (packet->len < ip_size + icmp_size)
         goto drop;
@@ -224,6 +219,7 @@ static i8 netsock_tcp_recv(struct netsock *sock, struct tcp_pcb *__unused tcp,
                    sock->rbuf.element_count - queue_get_level(&sock->rbuf));
     pbuf_copy_partial(packet, sock->tmpbuf, to_read, sock->packet_read_offset);
     tcp_recved(tcp, to_read);
+    sock->net->netsock_rx += to_read;
 
     for (u32 i = 0; i < to_read; i++)
         queue_add_blocking(&sock->rbuf, &((u8 *) sock->tmpbuf)[i]);
@@ -281,7 +277,17 @@ static i8 netsock_tcp_accept(struct netsock *sock, struct tcp_pcb *tcp_client,
     /* Accept the connection only if the netsock is waiting for a client,
        otherwise drop it. */
 
+    syslog(LOG_NOTE "netsock_tcp: connect from %s:%d",
+           ipaddr_ntoa(&tcp_client->remote_ip), tcp_client->remote_port);
+
     if (!sock->waiting_for_client) {
+        tcp_close(tcp_client);
+        return ERR_CLSD;
+    }
+
+    /* Drop anything that isn't from the LAN network. */
+
+    if (!netfilter_from_lan(&tcp_client->remote_ip)) {
         tcp_close(tcp_client);
         return ERR_CLSD;
     }
@@ -301,8 +307,8 @@ static i8 netsock_tcp_accept(struct netsock *sock, struct tcp_pcb *tcp_client,
 
     sock->net->socks[sock->net->last_netsock_id - 1] = client;
 
-    queue_add_blocking(&sock->waiting_client, &client);
     sock->waiting_for_client = false;
+    queue_add_blocking(&sock->waiting_client, &client);
 
     syslog("netsock_tcp: client %s:%d connected", ipaddr_ntoa(&client->addr),
            client->port);
@@ -385,7 +391,7 @@ static void netctrl_bind(struct net *net)
     if (err)
         syslog("netsock_tcp: bind failed (%d)", err);
 
-    sock->tcp = tcp_listen_with_backlog_and_err(sock->tcp, 1, &err);
+    sock->tcp = tcp_listen_with_backlog_and_err(sock->tcp, 2, &err);
     if (!sock->tcp)
         syslog("netsock_tcp: listen failed (%d)", err);
 
@@ -412,6 +418,21 @@ static void netctrl_accept(struct net *net)
        connected, blocking the main thread until something happens. */
 }
 
+static void netctrl_stat(struct net *net)
+{
+    i32 value;
+
+    queue_remove_blocking(&net->netctrl, &value);
+    switch (value) {
+    case NCSTAT_RX:
+        queue_add_blocking(&net->ctrlres, &net->netsock_rx);
+        break;
+    case NCSTAT_TX:
+        queue_add_blocking(&net->ctrlres, &net->netsock_tx);
+        break;
+    }
+}
+
 static void collect_netctrl(struct net *net)
 {
     u32 cmd;
@@ -433,6 +454,9 @@ static void collect_netctrl(struct net *net)
     case NC_ACCEPT:
         netctrl_accept(net);
         break;
+    case NC_STAT:
+        netctrl_stat(net);
+        break;
     }
 }
 
@@ -450,6 +474,7 @@ static void sock_send_data(struct netsock *sock)
         queue_remove_blocking(&sock->wbuf, &sock->tmpbuf[i]);
 
     tcp_write(sock->tcp, sock->tmpbuf, len, 0);
+    sock->net->netsock_tx += len;
 }
 
 static void send_data(struct net *net)
@@ -595,6 +620,28 @@ struct netsock *accept(struct netsock *sock)
     queue_remove_blocking(&sock->waiting_client, &client);
 
     return client;
+}
+
+u32 net_rx()
+{
+    u32 type;
+    u32 rx;
+
+    type = NCSTAT_RX;
+    netctrl(NC_STAT, &type, 1, &rx, 1);
+
+    return rx;
+}
+
+u32 net_tx()
+{
+    u32 type;
+    u32 tx;
+
+    type = NCSTAT_TX;
+    netctrl(NC_STAT, &type, 1, &tx, 1);
+
+    return tx;
 }
 
 usize net_read(struct netsock *sock, void *buffer, usize size)
