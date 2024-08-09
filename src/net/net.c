@@ -7,124 +7,15 @@
 #include <lwip/stats.h>
 #include <lwip/tcp.h>
 #include <micron/buildconfig.h>
+#include <micron/mem.h>
 #include <micron/micron.h>
 #include <micron/net.h>
+#include <micron/netfilter.h>
 #include <micron/syslog.h>
+#include <micron/wifi.h>
 #include <netif/ethernet.h>
 #include <pico/cyw43_arch.h>
 #include <pico/multicore.h>
-
-static int wifi_scan_callback(struct net *net,
-                              const cyw43_ev_scan_result_t *result)
-{
-    char mac[32];
-    char *offset;
-
-    if (!result)
-        return 0;
-
-    offset = mac;
-
-    for (u32 i = 0; i < 6; i++) {
-        snprintf(offset, 4, "%02x:", result->bssid[i]);
-        offset += 3;
-    }
-
-    offset[-1] = 0;
-    syslog(LOG_NOTE "wifi: ssid '%s' bssid %s", result->ssid, mac);
-
-    if (!strcmp((const char *) result->ssid, net->w_ssid))
-        net->w_found_networks++;
-
-    return 0;
-}
-
-static i32 wifi_connect(struct net *net)
-{
-    cyw43_wifi_scan_options_t scan_opts;
-    i32 err;
-
-    cyw43_arch_enable_sta_mode();
-
-    /* Scan only matching SSIDs. */
-
-    memset(&scan_opts, 0, sizeof(scan_opts));
-    strcpy((char *) scan_opts.ssid, net->w_ssid);
-
-    err = cyw43_wifi_scan(&cyw43_state, &scan_opts, net,
-                          (void *) wifi_scan_callback);
-    if (err) {
-        syslog(LOG_ERR "Failed to start scan (err=%d)", err);
-        return 1;
-    }
-
-    /* Wait until the scan has finished. */
-
-    while (1) {
-        if (!cyw43_wifi_scan_active(&cyw43_state))
-            break;
-        cyw43_arch_poll();
-        cyw43_arch_wait_for_work_until(make_timeout_time_ms(1000));
-    }
-
-    /* Connect to the network with a timeout of 10s. */
-
-    if (!net->w_found_networks) {
-        syslog("No network named %s found", net->w_ssid);
-        return 1;
-    }
-
-    err = cyw43_arch_wifi_connect_timeout_ms(
-        net->w_ssid, MICRON_CONFIG_NET_PASSWD, CYW43_AUTH_WPA2_AES_PSK, 10000);
-    if (err)
-        return 1;
-
-    syslog("Connected to '%s' network", net->w_ssid);
-    net->w_connected = true;
-
-    return 0;
-}
-
-static void print_ifaces()
-{
-    struct netif *iface;
-    char addr[16];
-    char gate[16];
-    char mac[24];
-    u32 mask_addr;
-    u32 mask;
-
-    iface = netif_list;
-
-    while (1) {
-        ipaddr_ntoa_r(&iface->ip_addr, addr, 16);
-        ipaddr_ntoa_r(&iface->gw, gate, 16);
-        snprintf(mac, 24, "%02x:%02x:%02x:%02x:%02x:%02x", iface->hwaddr[0],
-                 iface->hwaddr[1], iface->hwaddr[2], iface->hwaddr[3],
-                 iface->hwaddr[4], iface->hwaddr[5]);
-
-        mask = 0;
-        mask_addr = ntohl(iface->netmask.addr);
-        while (mask_addr) {
-            mask++;
-            mask_addr <<= 1;
-        }
-
-        syslog("%.2s: ip %s/%u via %s hw %s %s", iface->name, addr, mask, gate,
-               mac, netif_is_link_up(iface) ? "UP" : "DOWN");
-
-        iface = iface->next;
-        if (!iface)
-            break;
-    }
-}
-
-static bool netfilter_from_lan(const ip_addr_t *remote)
-{
-    /* Check for 192.168.0.0/16 or 10.0.0.0/8 addresses. */
-
-    return (remote->addr & 0xffff) == 0xa8c0 || (remote->addr & 0xff) == 10;
-}
 
 /**
  * Callback when receiving ICMP packets. Allows only ICMP requests from the same
@@ -146,7 +37,7 @@ static u8 icmp_recv(struct net *__unused net, struct raw_pcb *block,
     /* Drop any packets that are not from the same network and that have
        a strange size. */
 
-    if (!netfilter_from_lan(remote_addr))
+    if (!netfilter_lan_addr(remote_addr))
         goto drop;
     if (packet->len < ip_size + icmp_size)
         goto drop;
@@ -197,7 +88,84 @@ static void icmp_serve(struct net *net)
     syslog("icmp: Serving ICMP packets");
 }
 
-static struct net __micron_net;
+static struct netsock *netsock_create(struct net *net)
+{
+    struct netsock *sock;
+
+    sock = malloc(sizeof(*sock));
+    sock->tmpbuf = malloc(MICRON_CONFIG_NET_RWBUF);
+    sock->id = ++net->last_netsock_id;
+    sock->addr.addr = 0;
+    sock->port = 0;
+    sock->connected = false;
+    sock->packet_read_offset = 0;
+    sock->net = net;
+    queue_init(&sock->rbuf, sizeof(u8), MICRON_CONFIG_NET_RWBUF);
+    queue_init(&sock->wbuf, sizeof(u8), MICRON_CONFIG_NET_RWBUF);
+    queue_init(&sock->waiting_client, sizeof(uptr), 1);
+
+    return sock;
+}
+
+static void netsock_push(struct netsock *sock)
+{
+    u32 len;
+
+    /* Move data from the write buffer into the TCP/IP stack. Note that we
+       cannot send more data that can fit into the TCP queue, so the rest
+       just stays our wbuf queue and blocks. */
+
+    len = imin(tcp_sndbuf(sock->tcp), queue_get_level(&sock->wbuf));
+
+    for (u32 i = 0; i < len; i++)
+        queue_remove_blocking(&sock->wbuf, &sock->tmpbuf[i]);
+
+    tcp_write(sock->tcp, sock->tmpbuf, len, 0);
+    sock->net->netsock_tx += len;
+}
+
+static void net_push_all(struct net *net)
+{
+    struct netsock *sock;
+
+    /* Push all data in write buffers in open netsocks. */
+
+    for (i32 i = 0; i < net->nsocks; i++) {
+        if (!net->socks[i])
+            continue;
+        sock = net->socks[i];
+        if (queue_get_level(&sock->wbuf))
+            netsock_push(sock);
+    }
+}
+
+static i32 netsock_close(struct net *net, struct netsock *sock)
+{
+    /* Remove the socket from the netsock list. */
+
+    for (i32 i = 0; i < net->nsocks; i++) {
+        if (net->socks[i] == sock)
+            net->socks[i] = NULL;
+    }
+
+    /* Send any data we have left. */
+
+    while (!queue_is_empty(&sock->wbuf))
+        netsock_push(sock);
+
+    if (tcp_close(sock->tcp)) {
+        syslog(LOG_ERR "failed to tcp_close(%d)", sock->id);
+        return 1;
+    }
+
+    queue_free(&sock->rbuf);
+    queue_free(&sock->wbuf);
+    queue_free(&sock->waiting_client);
+    free(sock->tmpbuf);
+    free(sock);
+
+    return 0;
+}
 
 static i8 netsock_tcp_recv(struct netsock *sock, struct tcp_pcb *__unused tcp,
                            struct pbuf *packet, i8 __unused err)
@@ -206,7 +174,6 @@ static i8 netsock_tcp_recv(struct netsock *sock, struct tcp_pcb *__unused tcp,
 
     if (!packet) {
         sock->connected = false;
-        syslog("netsock_tcp: closed connection");
         return 0;
     }
 
@@ -250,23 +217,16 @@ static void netsock_tcp_err(struct netsock *__unused sock, i8 err)
     syslog("netsock_tcp: TCP/IP failure (%d)", err);
 }
 
-static struct netsock *netsock_create(struct net *net)
+static i32 net_add_sock(struct net *net, struct netsock *sock)
 {
-    struct netsock *sock;
+    for (i32 i = 0; i < net->nsocks; i++) {
+        if (net->socks[i])
+            continue;
+        net->socks[i] = sock;
+        return 0;
+    }
 
-    sock = malloc(sizeof(*sock));
-    sock->tmpbuf = malloc(MICRON_CONFIG_NET_RWBUF);
-    sock->id = ++net->last_netsock_id;
-    sock->addr.addr = 0;
-    sock->port = 0;
-    sock->connected = false;
-    sock->packet_read_offset = 0;
-    sock->net = net;
-    queue_init(&sock->rbuf, sizeof(u8), MICRON_CONFIG_NET_RWBUF);
-    queue_init(&sock->wbuf, sizeof(u8), MICRON_CONFIG_NET_RWBUF);
-    queue_init(&sock->waiting_client, sizeof(uptr), 1);
-
-    return sock;
+    return 1;
 }
 
 static i8 netsock_tcp_accept(struct netsock *sock, struct tcp_pcb *tcp_client,
@@ -274,11 +234,16 @@ static i8 netsock_tcp_accept(struct netsock *sock, struct tcp_pcb *tcp_client,
 {
     struct netsock *client;
 
+    if (err) {
+        syslog(LOG_ERR "lwip reported err %d", err);
+        return 0;
+    }
+
+    if (!tcp_client)
+        return 0;
+
     /* Accept the connection only if the netsock is waiting for a client,
        otherwise drop it. */
-
-    syslog(LOG_NOTE "netsock_tcp: connect from %s:%d",
-           ipaddr_ntoa(&tcp_client->remote_ip), tcp_client->remote_port);
 
     if (!sock->waiting_for_client) {
         tcp_close(tcp_client);
@@ -287,7 +252,7 @@ static i8 netsock_tcp_accept(struct netsock *sock, struct tcp_pcb *tcp_client,
 
     /* Drop anything that isn't from the LAN network. */
 
-    if (!netfilter_from_lan(&tcp_client->remote_ip)) {
+    if (!netfilter_lan_addr(&tcp_client->remote_ip)) {
         tcp_close(tcp_client);
         return ERR_CLSD;
     }
@@ -305,13 +270,16 @@ static i8 netsock_tcp_accept(struct netsock *sock, struct tcp_pcb *tcp_client,
     tcp_err(tcp_client, (tcp_err_fn) netsock_tcp_err);
     tcp_recv(tcp_client, (tcp_recv_fn) netsock_tcp_recv);
 
-    sock->net->socks[sock->net->last_netsock_id - 1] = client;
+    /* If we don't have space for the connection, abort it. */
+
+    if (net_add_sock(sock->net, client)) {
+        syslog(LOG_ERR "no space for new netsock");
+        tcp_close(tcp_client);
+        return ERR_CLSD;
+    }
 
     sock->waiting_for_client = false;
     queue_add_blocking(&sock->waiting_client, &client);
-
-    syslog("netsock_tcp: client %s:%d connected", ipaddr_ntoa(&client->addr),
-           client->port);
 
     return 0;
 }
@@ -339,7 +307,11 @@ static void netctrl_socket(struct net *net)
     /* Save the netsock in the socket list, so we can access it later,
        and send it to the user. */
 
-    net->socks[net->last_netsock_id - 1] = sock;
+    if (net_add_sock(net, sock)) {
+        syslog(LOG_ERR "no space for netsock");
+        goto err;
+    }
+
     queue_add_blocking(&net->ctrlres, &sock);
 
     return;
@@ -433,6 +405,16 @@ static void netctrl_stat(struct net *net)
     }
 }
 
+static void netctrl_close(struct net *net)
+{
+    struct netsock *sock;
+    i32 res;
+
+    queue_remove_blocking(&net->netctrl, &sock);
+    res = netsock_close(net, sock);
+    queue_add_blocking(&net->ctrlres, &res);
+}
+
 static void collect_netctrl(struct net *net)
 {
     u32 cmd;
@@ -457,42 +439,18 @@ static void collect_netctrl(struct net *net)
     case NC_STAT:
         netctrl_stat(net);
         break;
+    case NC_CLOSE:
+        netctrl_close(net);
+        break;
     }
 }
 
-static void sock_send_data(struct netsock *sock)
-{
-    u32 len;
-
-    /* Move data from the write buffer into the TCP/IP stack. Note that we
-       cannot send more data that can fit into the TCP queue, so the rest
-       just stays our wbuf queue and blocks. */
-
-    len = imin(tcp_sndbuf(sock->tcp), queue_get_level(&sock->wbuf));
-
-    for (u32 i = 0; i < len; i++)
-        queue_remove_blocking(&sock->wbuf, &sock->tmpbuf[i]);
-
-    tcp_write(sock->tcp, sock->tmpbuf, len, 0);
-    sock->net->netsock_tx += len;
-}
-
-static void send_data(struct net *net)
-{
-    struct netsock *sock;
-
-    for (u32 i = 0; i < net->last_netsock_id; i++) {
-        if (!net->socks[i])
-            continue;
-        sock = net->socks[i];
-        if (queue_get_level(&sock->wbuf))
-            sock_send_data(sock);
-    }
-}
+struct net __micron_net;
 
 static void net_thread()
 {
     struct net *net;
+    usize heap_free;
     i32 link;
     i32 rssi;
 
@@ -516,10 +474,48 @@ static void net_thread()
            network traffic from reaching interface. :( */
         cyw43_wifi_get_rssi(&cyw43_state, &rssi);
 
+        heap_free = malloc_heap_free();
+        if (heap_free < 16384)
+            syslog(LOG_WARN "low heap memory: %d kB", heap_free >> 10);
+
         collect_netctrl(net);
-        send_data(net);
+        net_push_all(net);
         cyw43_arch_poll();
         cyw43_arch_wait_for_work_until(make_timeout_time_ms(50));
+    }
+}
+
+static void print_ifaces()
+{
+    struct netif *iface;
+    char addr[16];
+    char gate[16];
+    char mac[24];
+    u32 mask_addr;
+    u32 mask;
+
+    iface = netif_list;
+
+    while (1) {
+        ipaddr_ntoa_r(&iface->ip_addr, addr, 16);
+        ipaddr_ntoa_r(&iface->gw, gate, 16);
+        snprintf(mac, 24, "%02x:%02x:%02x:%02x:%02x:%02x", iface->hwaddr[0],
+                 iface->hwaddr[1], iface->hwaddr[2], iface->hwaddr[3],
+                 iface->hwaddr[4], iface->hwaddr[5]);
+
+        mask = 0;
+        mask_addr = ntohl(iface->netmask.addr);
+        while (mask_addr) {
+            mask++;
+            mask_addr <<= 1;
+        }
+
+        syslog("%.2s: ip %s/%u via %s hw %s %s", iface->name, addr, mask, gate,
+               mac, netif_is_link_up(iface) ? "UP" : "DOWN");
+
+        iface = iface->next;
+        if (!iface)
+            break;
     }
 }
 
@@ -527,11 +523,14 @@ i32 net_init()
 {
     struct net *net;
 
+    /* Initialize the network stack, and connect to Wi-Fi. */
+
     net = &__micron_net;
     memset(net, 0, sizeof(*net));
 
     net->w_ssid = MICRON_CONFIG_NET_SSID;
     net->last_netsock_id = 0;
+    net->nsocks = 3;
     queue_init(&net->netctrl, sizeof(uptr), 32);
     queue_init(&net->ctrlres, sizeof(uptr), 32);
 
@@ -540,13 +539,22 @@ i32 net_init()
         return 1;
     }
 
-    if (wifi_connect(net)) {
-        syslog("Failed to connect to Wi-Fi");
-        return 1;
+    while (1) {
+        /* Try to connect to Wi-Fi. */
+
+        if (wifi_connect(net)) {
+            syslog("Failed to connect to Wi-Fi, trying again in 5s...");
+            sleep_ms(5000);
+            continue;
+        }
+
+        break;
     }
 
     print_ifaces();
     net->iface = netif_default;
+
+    /* Run the network stuff on the other core. */
 
     multicore_launch_core1(net_thread);
 
@@ -556,104 +564,4 @@ i32 net_init()
 ip_addr_t net_iface_ip()
 {
     return __micron_net.iface->ip_addr;
-}
-
-static void netctrl(uptr cmd, void *args, usize n_args, void *res, usize n_res)
-{
-    /* Communication between the main thread and the network thread is done by
-       using command queues. The user can send a command, like NC_SOCKET to
-       create a socket - and the network queue will allocate and initialize
-       the new socket once it has some time (isn't doing anything else).
-
-       Then, it sends the result (in this case, a single pointer to a struct
-       netsock) to the ctrlres queue. */
-
-    queue_add_blocking(&__micron_net.netctrl, &cmd);
-    for (usize i = 0; i < n_args; i++)
-        queue_add_blocking(&__micron_net.netctrl, &((uptr *) args)[i]);
-    for (usize i = 0; i < n_res; i++)
-        queue_remove_blocking(&__micron_net.ctrlres, &((uptr *) res)[i]);
-}
-
-struct netsock *socket()
-{
-    struct netsock *sock;
-
-    netctrl(NC_SOCKET, NULL, 0, &sock, 1);
-
-    return sock;
-}
-
-i32 connect(struct netsock *sock, ip_addr_t ip, u16 port)
-{
-    uptr args[3];
-    uptr res;
-
-    args[0] = (uptr) sock;
-    args[1] = (uptr) ip.addr;
-    args[2] = port;
-
-    netctrl(NC_CONNECT, args, 3, &res, 1);
-
-    return res;
-}
-
-i32 bind(struct netsock *sock, ip_addr_t ip, u16 port)
-{
-    uptr args[3];
-    uptr res;
-
-    args[0] = (uptr) sock;
-    args[1] = (uptr) ip.addr;
-    args[2] = port;
-
-    netctrl(NC_BIND, args, 3, &res, 1);
-
-    return res;
-}
-
-struct netsock *accept(struct netsock *sock)
-{
-    struct netsock *client;
-
-    netctrl(NC_ACCEPT, &sock, 1, NULL, 0);
-    queue_remove_blocking(&sock->waiting_client, &client);
-
-    return client;
-}
-
-u32 net_rx()
-{
-    u32 type;
-    u32 rx;
-
-    type = NCSTAT_RX;
-    netctrl(NC_STAT, &type, 1, &rx, 1);
-
-    return rx;
-}
-
-u32 net_tx()
-{
-    u32 type;
-    u32 tx;
-
-    type = NCSTAT_TX;
-    netctrl(NC_STAT, &type, 1, &tx, 1);
-
-    return tx;
-}
-
-usize net_read(struct netsock *sock, void *buffer, usize size)
-{
-    for (usize i = 0; i < size; i++)
-        queue_remove_blocking(&sock->rbuf, &((u8 *) buffer)[i]);
-    return size;
-}
-
-usize net_write(struct netsock *sock, const void *buffer, usize size)
-{
-    for (usize i = 0; i < size; i++)
-        queue_add_blocking(&sock->wbuf, &((u8 *) buffer)[i]);
-    return size;
 }

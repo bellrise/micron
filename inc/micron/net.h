@@ -19,6 +19,7 @@ struct net
     queue_t netctrl;         /* control queue */
     queue_t ctrlres;         /* reply queue */
     u32 last_netsock_id;
+    i32 nsocks;
     struct netsock *socks[32]; /* open netsocks */
     u32 netsock_rx;            /* RX on netsocks */
     u32 netsock_tx;            /* TX on netsocks */
@@ -47,6 +48,7 @@ enum netctrl_cmd
     NC_BIND = 3,    /* bind(sock, ip, port) -> i32 */
     NC_ACCEPT = 4,  /* accept(sock) -> sock */
     NC_STAT = 5,    /* xstat(value) -> u32 */
+    NC_CLOSE = 6,   /* close(sock) -> i32 */
 };
 
 enum netctrl_stat
@@ -61,15 +63,16 @@ i32 net_init();
 
 ip_addr_t net_iface_ip();
 
-struct netsock *socket();
-i32 connect(struct netsock *, ip_addr_t ip, u16 port);
-i32 bind(struct netsock *, ip_addr_t ip, u16 port);
-struct netsock *accept(struct netsock *);
-
 u32 net_rx();
 u32 net_tx();
 
+struct netsock *net_socket();
+
+struct netsock *net_accept(struct netsock *);
+i32 net_connect(struct netsock *, ip_addr_t ip, u16 port);
+i32 net_bind(struct netsock *, ip_addr_t ip, u16 port);
 usize net_read(struct netsock *, void *buffer, usize size);
 usize net_write(struct netsock *, const void *buffer, usize size);
+i32 net_close(struct netsock *);
 
 #endif /* MICRON_NET_H */

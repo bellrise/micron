@@ -11,7 +11,6 @@
 #include <pico/stdio_usb.h>
 #include <pico/time.h>
 
-struct meminfo __micron_meminfo;
 extern void user_main();
 
 int main()
@@ -28,7 +27,7 @@ int main()
 
     /* Initialize the system */
 
-    heap_init(&__micron_meminfo);
+    heap_init();
     net_init();
     user_main();
 

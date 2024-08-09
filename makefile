@@ -2,7 +2,7 @@
 # Copyright (c) 2024 bellrise
 
 VER_MAJ := 0
-VER_MIN := 4
+VER_MIN := 5
 
 GENCONF  := build/include/micron_genconfig.h
 LWIPCONF := build/include/lwipopts.h

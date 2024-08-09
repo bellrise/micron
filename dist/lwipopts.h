@@ -1,17 +1,18 @@
 #ifndef _LWIPOPTS_EXAMPLE_COMMONH_H
 #define _LWIPOPTS_EXAMPLE_COMMONH_H
 
-#define NO_SYS          1
-#define LWIP_SOCKET     0
-#define MEM_LIBC_MALLOC 1
+#define NO_SYS      1
+#define LWIP_SOCKET 0
 
 /* Let's give lwip a nice piece of 16kB RAM */
-#define MEM_SIZE 16384
+#define MEM_SIZE 32768
 
-#define MEM_ALIGNMENT              4
+#define MEM_LIBC_MALLOC 1
+#define MEM_ALIGNMENT   4
+
 #define MEMP_NUM_TCP_SEG           32
 #define MEMP_NUM_ARP_QUEUE         10
-#define ARP_TABLE_SIZE             32
+#define ARP_TABLE_SIZE             10
 #define PBUF_POOL_SIZE             24
 #define LWIP_ARP                   1
 #define LWIP_ETHERNET              1
@@ -25,7 +26,7 @@
 #define LWIP_NETIF_LINK_CALLBACK   1
 #define LWIP_NETIF_HOSTNAME        1
 #define LWIP_NETCONN               0
-#define MEM_STATS                  0
+#define MEM_STATS                  1
 #define SYS_STATS                  1
 #define MEMP_STATS                 0
 #define LINK_STATS                 1
@@ -39,9 +40,9 @@
 #define LWIP_NETIF_TX_SINGLE_PBUF  1
 #define DHCP_DOES_ARP_CHECK        0
 #define LWIP_DHCP_DOES_ACD_CHECK   0
-#define ARP_QUEUEING               1
 
-#define LWIP_DEBUG 0
+#define LWIP_DEBUG 1
+#define LWIP_STATS 1
 
 #define ETHARP_DEBUG     LWIP_DBG_OFF
 #define NETIF_DEBUG      LWIP_DBG_OFF

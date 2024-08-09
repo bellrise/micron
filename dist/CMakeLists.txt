@@ -1,6 +1,6 @@
 # micron
 
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.6)
 set(PROJECT micron)
 
 # For the proper architecture to be selected, the sdk_init has to be
@@ -21,7 +21,7 @@ if (NOT TARGET tinyusb_device)
 	message(FATAL_ERROR "Not compiling for tinyusb")
 endif()
 
-file(GLOB SOURCES ../src/*.c)
+file(GLOB SOURCES ../src/*.c ../src/net/*.c)
 add_executable(${PROJECT} ${SOURCES})
 
 target_compile_options(${PROJECT} PRIVATE -Wall -Wextra)

@@ -14,7 +14,8 @@ struct meminfo
     uptr heap_size;
 };
 
-i32 heap_init(struct meminfo *);
-i32 heap_close(struct meminfo *);
+i32 heap_init();
+i32 heap_close();
+usize malloc_heap_free();
 
 #endif /* MICRON_MEM_H */
