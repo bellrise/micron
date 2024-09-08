@@ -1,6 +1,7 @@
 /* net.c - network operations
    Copyright (c) 2024 bellrise */
 
+#include <boards/pico_w.h>
 #include <lwip/icmp.h>
 #include <lwip/inet_chksum.h>
 #include <lwip/raw.h>
@@ -473,6 +474,7 @@ static void net_thread()
            much, but not checking the connection RSSI will end up stopping all
            network traffic from reaching interface. :( */
         cyw43_wifi_get_rssi(&cyw43_state, &rssi);
+        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, true);
 
         heap_free = malloc_heap_free();
         if (heap_free < 16384)
@@ -483,6 +485,8 @@ static void net_thread()
         cyw43_arch_poll();
         cyw43_arch_wait_for_work_until(make_timeout_time_ms(50));
     }
+
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
 }
 
 static void print_ifaces()

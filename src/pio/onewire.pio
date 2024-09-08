@@ -1,0 +1,79 @@
+; 1-Wire PIO program
+; Copyright (c) 2024 bellrise
+
+; Each instruction should take around 2 us, if we split the clock
+; using a clkdiv of 255 (this is from the base clock of 125 MHz).
+; See: https://en.wikipedia.org/wiki/1-Wire
+
+; Public API:
+;   read:
+;       cmd=0x00
+;   write:
+;       cmd=0xFA, n=u8, b[0]=u8, ..., b[n - 1]=u8
+
+; While reading can be done slowly, as the master wants, writing
+; has to be done in a stream, so write() takes an array of u8s.
+
+.program onewire
+.pio_version 0          ; use RP2040 instruction set
+
+.define public readb    0x00
+.define public writeb   0xFA
+.define public clkdiv   255
+
+.define DIN  0
+.define DOUT 1
+
+
+_entry:
+    pull block          ; wait for read/write request
+    mov x, osr          ; store request in X
+    jmp !x, _read       ; if X is 0, read, otherwise write
+
+
+; _write(n, b)
+_write:
+    set pindirs, DOUT   ; output mode
+    set pins, 0         ; set pin low
+
+_sleep0:
+    jmp x--, _sleep0    ; because in write mode 250 is stored in X,
+                        ; we will sleep for around ~500 us
+
+    set pindirs, DIN [31] ; ready to read after ~60us
+    wait 1 pin 0 [31]   ; wait until the slave stops pulling down
+
+    pull block          ; get the amount of bytes we need to write
+    mov x, osr          ; store it in X
+
+_writebyte:
+    pull block          ; get the byte we want to send
+    set y, 7            ; we're sending 8 bits
+    set pindirs, DOUT   ; output mode
+
+_writeloop:
+    set pins, 0 [1]     ; pull low for 4 us
+    out pins, 1 [31]    ; keep low for 0, pull up for 1 and keep it
+                        ; there for 60 us
+    set pins, 1 [20]    ; pull up again for the next bit
+    jmp y--, _writeloop ; loop for 8 bits
+
+    jmp x--, _writebyte ; write N bytes
+
+    set pindirs, DIN [31] ; input mode
+    jmp _entry          ; wait for another instruction
+
+
+; _read()
+_read:
+    set y, 7            ; read 8 bits
+
+_readloop:
+    set pindirs, DOUT   ; to read a bit, we need to pull the line low
+    set pins, 0 [1]     ; for ~4us to show that we are ready
+    set pindirs, DIN [5] ; allow the slave to write after ~10us
+    in pins, 1 [10]     ; read after ~20us to check the bit
+
+    jmp y--, _readloop  ; loop for 8 bits
+
+    ; Autopush mode will push the result back to C land.

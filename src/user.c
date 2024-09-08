@@ -110,23 +110,6 @@ static struct drv *ds1820_init()
     return ds1820;
 }
 
-static u8 ds1820_crc8(u8 *_mem)
-{
-    u8 *mem[9];
-    i32 i;
-
-    memcpy(mem, _mem, 8);
-    mem[8] = 0;
-
-    // X8 + X5 + X4 + 1
-    u16 polynomial = 0b100110001;
-
-    // TODO: write this crc8 functionm
-    // https://youtu.be/sNkERQlK8j8?si=n3C0XXESkzGUDgeM&t=1058
-
-    return 0;
-}
-
 static float ds1820_temperature(struct drv *ds1820)
 {
     u8 mem[9];
@@ -155,13 +138,6 @@ static float ds1820_temperature(struct drv *ds1820)
 
        We can store anything in the user bytes, and they will be stored in the
        EEPROM, so it stays intact after power-down :). */
-
-    /* Return a value of out the range when we encounter a "bad package". */
-
-    if (ds1820_crc8(mem)) {
-        printf("Invalid CRC\n");
-        return -1000;
-    }
 
     return (float) mem[0] / 2 * (mem[1] ? -1 : 1);
 }
