@@ -3,6 +3,7 @@
 
 #include <lwip/ip_addr.h>
 #include <micron/buildconfig.h>
+#include <micron/drv.h>
 #include <micron/micron.h>
 #include <micron/net.h>
 #include <micron/syslog.h>
@@ -18,6 +19,7 @@ struct http_client
     char **lines;
     char *buf1;
     char *http_header_buf;
+    struct drv *ds1820;
 };
 
 static void split_http_line(char *line, char **method, char **path, char **ver)
@@ -84,16 +86,102 @@ static void route_(struct http_client *http, struct netsock *client)
     send_ok(http, client, "application/json", json_res);
 }
 
+/* All info about the DS1820 interface is pulled from here:
+   https://www.analog.com/media/en/technical-documentation/data-sheets/DS18S20.pdf
+ */
+
+static struct drv *ds1820_init()
+{
+    struct drv *ds1820;
+    u8 sn[8];
+
+    ds1820 = drv_find("onewire");
+    if (!ds1820) {
+        printf("Missing 1-Wire driver, cannot start temperature service\n");
+        return NULL;
+    }
+
+    ds1820->init(ds1820, /* GPIO = */ 22);
+    ds1820->write(ds1820, (u8[]){/* Read ROM */ 0x33}, 1);
+    ds1820->read(ds1820, sn, 8);
+
+    printf("DS1820 serial number: %08X%08X\n", *(u32 *) (sn + 4), *(u32 *) sn);
+
+    return ds1820;
+}
+
+static u8 ds1820_crc8(u8 *_mem)
+{
+    u8 *mem[9];
+    i32 i;
+
+    memcpy(mem, _mem, 8);
+    mem[8] = 0;
+
+    // X8 + X5 + X4 + 1
+    u16 polynomial = 0b100110001;
+
+    // TODO: write this crc8 functionm
+    // https://youtu.be/sNkERQlK8j8?si=n3C0XXESkzGUDgeM&t=1058
+
+    return 0;
+}
+
+static float ds1820_temperature(struct drv *ds1820)
+{
+    u8 mem[9];
+
+    /* First, send a Skip ROM+Convert T command to the DS1820 to start
+       converting the temperature, and give it around 700ms to finish.
+       Then we can pull the temperature from the on-board 9B memory. */
+
+    ds1820->write(ds1820, (u8[]){0xCC, /* Convert T */ 0x44}, 2);
+    sleep_ms(800);
+
+    ds1820->write(ds1820, (u8[]){0xCC, /* Read Scratch */ 0xBE}, 2);
+    ds1820->read(ds1820, mem, 9);
+
+    /* The 9 byte memory layout of the DS1820 is as follows:
+
+       0    temperature LSB (temp x count per C (1))
+       1    temperature MSB (two states, 0x00 for +C and 0xFF for -C)
+       2    user byte 1
+       3    user byte 2
+       4    reserved
+       5    reserved
+       6    count remain (used for precise temperature reading)
+       7    count per C (usually 16)
+       8    CRC
+
+       We can store anything in the user bytes, and they will be stored in the
+       EEPROM, so it stays intact after power-down :). */
+
+    /* Return a value of out the range when we encounter a "bad package". */
+
+    if (ds1820_crc8(mem)) {
+        printf("Invalid CRC\n");
+        return -1000;
+    }
+
+    return (float) mem[0] / 2 * (mem[1] ? -1 : 1);
+}
+
 static void route_metrics(struct http_client *http, struct netsock *client)
 {
     const char *reply_fmt;
     usize uptime_ms;
     float uptime;
     char *reply;
+    char *temp_str;
+    char *temp_reply;
+    float temp;
 
     reply = http->buf1;
+    temp_reply = http->http_header_buf;
+    temp_reply[0] = 0;
     uptime_ms = time_us_64() / 1000;
     uptime = (float) uptime_ms / 1000;
+    temp = ds1820_temperature(http->ds1820);
 
     reply_fmt = "# HELP uptime_total System uptime in unix format\n"
                 "# TYPE uptime_total counter\n"
@@ -103,9 +191,16 @@ static void route_metrics(struct http_client *http, struct netsock *client)
                 "netstat_rx_bytes %d\n"
                 "# HELP netstat_tx_bytes Sent bytes on netsockets\n"
                 "# TYPE netstat_tx_bytes counter\n"
-                "netstat_tx_bytes %d\n";
+                "netstat_tx_bytes %d\n%s";
 
-    snprintf(reply, http->bufsize, reply_fmt, uptime, net_tx(), net_rx());
+    temp_str = "# HELP sensor_temperature_0 Temperature on sensor 0\n"
+               "# TYPE sensor_temperature_0 gauge\n"
+               "sensor_temperature_0 %.2f\n";
+
+    if (temp != -1000)
+        snprintf(temp_reply, http->bufsize, temp_str, temp);
+    snprintf(reply, http->bufsize, reply_fmt, uptime, net_tx(), net_rx(),
+             temp_reply);
 
     send_ok(http, client, "text/plain", reply);
 }
@@ -205,6 +300,8 @@ static void http_service()
     server = net_socket();
     err = net_bind(server, net_iface_ip(), 80);
 
+    http_client.ds1820 = ds1820_init();
+
     if (err) {
         printf("Failed to bind() address\n");
         return;
@@ -228,5 +325,6 @@ static void http_service()
 void user_main()
 {
     /* Serve HTTP requests on :80. */
-    http_service();
+    if (MICRON_CONFIG_NET)
+        http_service();
 }

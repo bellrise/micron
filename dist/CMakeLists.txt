@@ -22,14 +22,19 @@ if (NOT TARGET tinyusb_device)
 	message(FATAL_ERROR "Not compiling for tinyusb")
 endif()
 
-file(GLOB SOURCES ../src/*.c ../src/net/*.c)
+file(GLOB SOURCES
+    ../src/*.c
+    ../src/net/*.c
+    ../src/drv/*.c
+)
 
 add_executable(${PROJECT} ${SOURCES})
+
 target_compile_options(${PROJECT} PRIVATE -Wall -Wextra)
 target_link_libraries(${PROJECT} pico_cyw43_arch_lwip_poll
     pico_stdlib pico_multicore pico_util)
 target_include_directories(${PROJECT} PRIVATE ../inc
-    ../build/include)
+    ../build/include ../build)
 
 pico_enable_stdio_usb(${PROJECT} 1)
 
