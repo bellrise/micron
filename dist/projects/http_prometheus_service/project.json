@@ -1,0 +1,35 @@
+{
+    "src": [
+        "user/http_prometheus_service.c",
+        "drv/*.c",
+        "net/*.c",
+        "boot.c",
+        "mem.c",
+        "syslog.c"
+    ],
+    "libraries": [
+        "pico_cyw43_arch_lwip_poll",
+        "pico_stdlib",
+        "pico_multicore",
+        "pico_util"
+    ],
+    "board": "pico_w",
+    "clangd": {
+        "includes": [
+            "{{PICO_SDK}}/lib/lwip/src/include",
+            "{{PICO_SDK}}/lib/cyw43-driver/src",
+            "{{PICO_SDK}}/build/generated/pico_base"
+        ],
+        "flags": [
+            "-Wall",
+            "-Wextra"
+        ],
+        "defines": {
+            "PICO_CYW43_ARCH_POLL": "1",
+            "PICO_BOARD": "pico_w",
+            "PICO_PLATFORM": "rp2040",
+            "PICO_RP2040": "1"
+        }
+    }
+}
+

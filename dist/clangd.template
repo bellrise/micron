@@ -1,0 +1,5 @@
+{{INCLUDES}}
+-I./build/include
+-I./inc
+{{FLAGS}}
+{{DEFINES}}

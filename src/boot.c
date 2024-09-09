@@ -4,7 +4,6 @@
 #include <micron/buildconfig.h>
 #include <micron/mem.h>
 #include <micron/micron.h>
-#include <micron/net.h>
 #include <micron/syslog.h>
 #include <pico/bootrom.h>
 #include <pico/printf.h>
@@ -29,7 +28,6 @@ int main()
     /* Initialize the system */
 
     heap_init();
-    net_init();
     user_main();
 
     /* If we happen to exit user mode, just reboot the board. */

@@ -1,0 +1,29 @@
+{
+    "src": [
+        "user/console.c",
+        "boot.c",
+        "mem.c",
+        "syslog.c"
+    ],
+    "libraries": [
+        "pico_stdlib",
+        "pico_multicore",
+        "pico_util"
+    ],
+    "board": "pico",
+    "clangd": {
+        "includes": [
+            "{{PICO_SDK}}/build/generated/pico_base"
+        ],
+        "flags": [
+            "-Wall",
+            "-Wextra"
+        ],
+        "defines": {
+            "PICO_BOARD": "pico",
+            "PICO_PLATFORM": "rp2040",
+            "PICO_RP2040": "1"
+        }
+    }
+}
+

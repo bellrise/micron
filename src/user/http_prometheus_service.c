@@ -300,6 +300,9 @@ static void http_service()
 
 void user_main()
 {
+    /* Use network. */
+    net_init();
+
     /* Serve HTTP requests on :80. */
     if (MICRON_CONFIG_NET)
         http_service();

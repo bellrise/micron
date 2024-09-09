@@ -1,0 +1,105 @@
+#!/usr/bin/python3
+# I know this is not the cleanest, but we have to use cmake anyway,
+# so no matter what I write here it's going to be lighter than cmake ;p
+
+import shutil
+import json
+import glob
+import sys
+import os
+
+
+def get_projects():
+    return os.listdir("dist/projects")
+
+
+def usage():
+    print("usage: ./dist/configure PROJECT\n")
+    print("Generate the necessary files to build the given project.\n")
+    print("Projects:")
+    for p in get_projects():
+        print("  " + p)
+    print()
+    exit(0)
+
+
+def readfile(path) -> str:
+    with open(path) as f:
+        return f.read()
+
+
+def writefile(path, contents: str):
+    with open(path, "w") as f:
+        f.write(contents)
+
+
+def configure(info, name):
+    if os.path.isdir("build"):
+        shutil.rmtree("build")
+    os.mkdir("build")
+
+    # dist/cmake.template -> build/CMakeLists.txt
+
+    cmake = readfile("dist/cmake.template")
+
+    sources = []
+    for src in info["src"]:
+        if "*" not in src:
+            sources.append("../src/" + src)
+            continue
+        sources.extend("../" + x for x in glob.glob("src/" + src))
+
+    to_replace = {
+        "BOARD": info["board"],
+        "SOURCES": " ".join(sources),
+        "LIBRARIES": " ".join(info["libraries"]),
+    }
+
+    for k, v in to_replace.items():
+        cmake = cmake.replace("{{" + k + "}}", v)
+
+    writefile("build/CMakeLists.txt", cmake)
+
+    # dist/clangd.template -> build/custom_compile_flags.txt
+
+    clangd = readfile("dist/clangd.template")
+
+    includes = [f"-I{x}" for x in info["clangd"]["includes"]]
+    flags = info["clangd"]["flags"]
+    defines = [f"-D{k}={v}" for k, v in info["clangd"]["defines"].items()]
+
+    to_replace = {
+        "INCLUDES": "\n".join(includes),
+        "FLAGS": "\n".join(flags),
+        "DEFINES": "\n".join(defines),
+    }
+
+    for k, v in to_replace.items():
+        clangd = clangd.replace("{{" + k + "}}", v)
+
+    writefile("build/custom_compile_flags.txt", clangd)
+
+    # We're done.
+
+    writefile("build/project", name)
+
+
+def main():
+    if len(sys.argv) < 2:
+        usage()
+    if "-h" in sys.argv or "--help" in sys.argv:
+        usage()
+
+    p = sys.argv[1]
+    if p not in get_projects():
+        print("Not a project, see --help")
+        exit(1)
+
+    jsonpath = "dist/projects/" + p + "/project.json"
+    with open(jsonpath) as f:
+        project = json.load(f)
+
+    configure(project, p)
+
+
+main()

@@ -5,7 +5,6 @@
 #define MICRON_MEM_H 1
 
 #include <micron/micron.h>
-#include <netif/ethernet.h>
 
 struct meminfo
 {

@@ -4,10 +4,14 @@
 #ifndef MICRON_NET_H
 #define MICRON_NET_H 1
 
-#include <lwip/netif.h>
-#include <micron/micron.h>
-#include <netif/ethernet.h>
-#include <pico/util/queue.h>
+#include <micron/buildconfig.h>
+
+#if MICRON_CONFIG_NET
+
+# include <lwip/netif.h>
+# include <micron/micron.h>
+# include <netif/ethernet.h>
+# include <pico/util/queue.h>
 
 struct net
 {
@@ -75,4 +79,5 @@ usize net_read(struct netsock *, void *buffer, usize size);
 usize net_write(struct netsock *, const void *buffer, usize size);
 i32 net_close(struct netsock *);
 
+#endif /* MICRON_CONFIG_NET */
 #endif /* MICRON_NET_H */

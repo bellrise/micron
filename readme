@@ -1,4 +1,8 @@
 Micron
 ======
 
-System developed for the Raspberry Pi Pico line-up.
+System developed for the Raspberry Pi Pico line-up. Building is made simple
+with a couple of scripts, allowing you to select a particular project.
+
+    $ ./dist/configure console      # select a project
+    $ make                          # build!
