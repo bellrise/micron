@@ -5,12 +5,12 @@
 #define MICRON_VERSION_H 1
 
 #define MICRON_VER_MAJ 0
-#define MICRON_VER_MIN 5
+#define MICRON_VER_MIN 6
 
-#define MICRON_STRVER "0.5"
+#define MICRON_STRVER "0.6"
 
 /* The version number is created by combining the major and minor number,
    with the major number offset by 16 bits to the left. */
-#define MICRON_VER 0x00000005
+#define MICRON_VER 0x00000006
 
 #endif /* MICRON_VERSION_H */

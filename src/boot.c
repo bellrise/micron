@@ -15,6 +15,12 @@ extern void user_main();
 
 int main()
 {
+    /* Initialize the system */
+
+    mem_init();
+
+    /* Initialize connection */
+
     stdio_usb_init();
     stdio_set_driver_enabled(&stdio_usb, true);
     stdio_filter_driver(&stdio_usb);
@@ -25,9 +31,10 @@ int main()
 
     syslog(LOG_BOLD "Micron " MICRON_STRVER);
 
-    /* Initialize the system */
+    mem_info();
 
-    heap_init();
+    /* Enter "user mode" */
+
     user_main();
 
     /* If we happen to exit user mode, just reboot the board. */

@@ -62,6 +62,7 @@ compile_flags.txt: build/project
 
 usbdebug:
 	picotool load -u build/micron.uf2 -f
+	picotool reboot
 	while [ ! -e /dev/ttyACM0 ]; do sleep 0.5; done \
 		&& picocom -b 115200 --imap lfcrlf /dev/ttyACM0
 
