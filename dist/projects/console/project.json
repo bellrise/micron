@@ -10,7 +10,7 @@
         "pico_multicore",
         "pico_util"
     ],
-    "board": "pico",
+    "board": "pico2_w",
     "clangd": {
         "includes": [
             "{{PICO_SDK}}/build/generated/pico_base"
@@ -20,10 +20,8 @@
             "-Wextra"
         ],
         "defines": {
-            "PICO_BOARD": "pico",
-            "PICO_PLATFORM": "rp2040",
-            "PICO_RP2040": "1"
+            "PICO_BOARD": "pico2_w",
+            "PICO_PLATFORM": "rp2350-arm-s"
         }
     }
 }
-
