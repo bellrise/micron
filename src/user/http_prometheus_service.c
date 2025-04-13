@@ -102,7 +102,7 @@ static struct drv *ds1820_init()
     }
 
     ds1820->init(ds1820, /* GPIO = */ 22);
-    ds1820->write(ds1820, (u8[]){/* Read ROM */ 0x33}, 1);
+    ds1820->write(ds1820, (u8[]) {/* Read ROM */ 0x33}, 1);
     ds1820->read(ds1820, sn, 8);
 
     printf("DS1820 serial number: %08X%08X\n", *(u32 *) (sn + 4), *(u32 *) sn);
@@ -118,10 +118,10 @@ static float ds1820_temperature(struct drv *ds1820)
        converting the temperature, and give it around 700ms to finish.
        Then we can pull the temperature from the on-board 9B memory. */
 
-    ds1820->write(ds1820, (u8[]){0xCC, /* Convert T */ 0x44}, 2);
+    ds1820->write(ds1820, (u8[]) {0xCC, /* Convert T */ 0x44}, 2);
     sleep_ms(800);
 
-    ds1820->write(ds1820, (u8[]){0xCC, /* Read Scratch */ 0xBE}, 2);
+    ds1820->write(ds1820, (u8[]) {0xCC, /* Read Scratch */ 0xBE}, 2);
     ds1820->read(ds1820, mem, 9);
 
     /* The 9 byte memory layout of the DS1820 is as follows:

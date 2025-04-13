@@ -24,10 +24,10 @@ struct meminfo
     u8 *pages_start;
 };
 
-i32 mem_init();
-i32 mem_close();
-void mem_info();
+i32 _mem_init();
+i32 _mem_close();
 
+void mem_info();
 usize malloc_heap_free_left();
 
 void *page_alloc(u32 pages, u8 flags);

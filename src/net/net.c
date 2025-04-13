@@ -8,6 +8,7 @@
 #include <lwip/stats.h>
 #include <lwip/tcp.h>
 #include <micron/buildconfig.h>
+#include <micron/errno.h>
 #include <micron/mem.h>
 #include <micron/micron.h>
 #include <micron/net.h>
@@ -476,7 +477,7 @@ static void net_thread()
         cyw43_wifi_get_rssi(&cyw43_state, &rssi);
         cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, true);
 
-        heap_free = malloc_heap_free();
+        heap_free = malloc_heap_free_left();
         if (heap_free < 16384)
             syslog(LOG_WARN "low heap memory: %d kB", heap_free >> 10);
 
@@ -487,40 +488,6 @@ static void net_thread()
     }
 
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
-}
-
-static void print_ifaces()
-{
-    struct netif *iface;
-    char addr[16];
-    char gate[16];
-    char mac[24];
-    u32 mask_addr;
-    u32 mask;
-
-    iface = netif_list;
-
-    while (1) {
-        ipaddr_ntoa_r(&iface->ip_addr, addr, 16);
-        ipaddr_ntoa_r(&iface->gw, gate, 16);
-        snprintf(mac, 24, "%02x:%02x:%02x:%02x:%02x:%02x", iface->hwaddr[0],
-                 iface->hwaddr[1], iface->hwaddr[2], iface->hwaddr[3],
-                 iface->hwaddr[4], iface->hwaddr[5]);
-
-        mask = 0;
-        mask_addr = ntohl(iface->netmask.addr);
-        while (mask_addr) {
-            mask++;
-            mask_addr <<= 1;
-        }
-
-        syslog("%.2s: ip %s/%u via %s hw %s %s", iface->name, addr, mask, gate,
-               mac, netif_is_link_up(iface) ? "UP" : "DOWN");
-
-        iface = iface->next;
-        if (!iface)
-            break;
-    }
 }
 
 i32 net_init()
@@ -535,35 +502,20 @@ i32 net_init()
     net = &__micron_net;
     memset(net, 0, sizeof(*net));
 
-    net->w_ssid = MICRON_CONFIG_NET_SSID;
     net->last_netsock_id = 0;
     net->nsocks = 3;
     queue_init(&net->netctrl, sizeof(uptr), 32);
     queue_init(&net->ctrlres, sizeof(uptr), 32);
 
-    if (cyw43_arch_init_with_country(CYW43_COUNTRY_POLAND)) {
-        syslog(LOG_ERR "Failed to initialize cyw43 device");
-        return 1;
-    }
-
-    while (1) {
-        /* Try to connect to Wi-Fi. */
-
-        if (wifi_connect(net)) {
-            syslog("Failed to connect to Wi-Fi, trying again in 5s...");
-            sleep_ms(5000);
-            continue;
-        }
-
-        break;
-    }
-
-    print_ifaces();
-    net->iface = netif_default;
+    if (MICRON_CONFIG_NET_WIFI)
+        wifi_init(net);
 
     /* Run the network stuff on the other core. */
 
-    multicore_launch_core1(net_thread);
+    if (net->iface)
+        multicore_launch_core1(net_thread);
+    else
+        return ENOENT;
 
     return 0;
 }

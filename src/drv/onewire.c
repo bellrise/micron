@@ -55,17 +55,17 @@ static i32 wire_init(struct drv *self, ...)
     else if (pio_can_add_program(pio1, &onewire_program))
         wire->pio = pio1;
     if (!wire->pio)
-        return DVE_NPIO;
+        return DE_NPIO;
 
     pio_offset = pio_add_program(wire->pio, &onewire_program);
     if (pio_offset < 0)
-        return DVE_NPIO;
+        return DE_NPIO;
 
     /* Claim a state machine. */
 
     wire->sm = pio_claim_unused_sm(wire->pio, false);
     if (wire->sm < 0)
-        return DVE_NSM;
+        return DE_NSM;
 
     pio_gpio_init(wire->pio, wire->pin);
     config = onewire_program_get_default_config(pio_offset);
@@ -84,7 +84,7 @@ static i32 wire_init(struct drv *self, ...)
     pio_sm_init(wire->pio, wire->sm, pio_offset, &config);
     pio_sm_set_enabled(wire->pio, wire->sm, true);
 
-    return DVE_OK;
+    return DE_OK;
 }
 
 #define WIRE ((struct wire *) self->_data)
@@ -97,7 +97,7 @@ static usize wire_write(struct drv *self, void *buffer, usize n)
     for (usize i = 0; i < n; i++)
         pio_sm_put_blocking(WIRE->pio, WIRE->sm, ((u8 *) buffer)[i]);
 
-    return DVE_OK;
+    return DE_OK;
 }
 
 static usize wire_read(struct drv *self, void *buffer, usize n)
@@ -110,7 +110,7 @@ static usize wire_read(struct drv *self, void *buffer, usize n)
         ((u8 *) buffer)[i] = pio_sm_get_blocking(WIRE->pio, WIRE->sm) >> 24;
     }
 
-    return DVE_OK;
+    return DE_OK;
 }
 
 struct drv drv_onewire_decl = {

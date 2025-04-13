@@ -13,7 +13,7 @@ extern void *_sbrk(i32 incr);
 extern u8 __StackLimit;
 extern u8 __bss_end__;
 
-i32 mem_init()
+i32 _mem_init()
 {
     struct meminfo *info;
     u32 total_pages;
@@ -121,7 +121,7 @@ void mem_info()
     dump_pagemap();
 }
 
-i32 mem_close()
+i32 _mem_close()
 {
     return 0;
 }

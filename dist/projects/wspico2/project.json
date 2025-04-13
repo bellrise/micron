@@ -1,0 +1,32 @@
+{
+    "src": [
+        "user/wspico2.c",
+        "drv/wspico2.c",
+        "drv/drv.c",
+        "boot.c",
+        "mem.c",
+        "syslog.c"
+    ],
+    "libraries": [
+        "pico_stdlib",
+        "pico_multicore",
+        "pico_util",
+        "hardware_pwm",
+        "hardware_dma",
+        "hardware_spi"
+    ],
+    "board": "pico2_w",
+    "clangd": {
+        "includes": [
+            "{{PICO_SDK}}/build/generated/pico_base"
+        ],
+        "flags": [
+            "-Wall",
+            "-Wextra"
+        ],
+        "defines": {
+            "PICO_BOARD": "pico2_w",
+            "PICO_PLATFORM": "rp2350-arm-s"
+        }
+    }
+}

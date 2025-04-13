@@ -17,7 +17,7 @@ int main()
 {
     /* Initialize the system */
 
-    mem_init();
+    _mem_init();
 
     /* Initialize connection */
 

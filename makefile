@@ -10,11 +10,12 @@ VER_MIN := 6
 GENCONF  := build/include/micron_genconfig.h
 DRVLIST  := build/include/micron_drvlist.h
 LWIPCONF := build/include/lwipopts.h
+BTCONF 	 := build/include/btstack_config.h
 
 
 __default: build firmware
 
-firmware: build pios $(GENCONF) $(DRVLIST) $(LWIPCONF)
+firmware: build pios $(GENCONF) $(DRVLIST) $(LWIPCONF) $(BTCONF)
 	@make --no-print-directory -j $(shell nproc) -C build
 
 build/project:
@@ -40,6 +41,9 @@ build/include/piocode/onewire.h: src/pio/onewire.pio
 $(LWIPCONF): dist/lwipopts.h
 	cp dist/lwipopts.h build/include/lwipopts.h
 
+$(BTCONF): dist/btstack_config.h
+	cp dist/btstack_config.h build/include/btstack_config.h
+
 $(DRVLIST): $(wildcard src/drv/*.c)
 	dist/mkdrv > $@
 
@@ -60,11 +64,14 @@ compile_flags.txt: build/project
 	cat build/custom_compile_flags.txt | sed "s;{{PICO_SDK}};$(PICO_SDK_PATH);g" \
 		>> compile_flags.txt
 
-usbdebug:
-	picotool load -u build/micron.uf2 -f
-	picotool reboot
+connect:
 	while [ ! -e /dev/ttyACM0 ]; do sleep 0.5; done \
 		&& picocom -b 115200 --imap lfcrlf /dev/ttyACM0
+
+usbdebug:
+	picotool load -u build/micron.uf2 -f
+	picotool reboot -f
+	make -s --no-print-directory connect
 
 
 .PHONY: compile_flags.txt

@@ -1,7 +1,6 @@
 {
     "src": [
-        "user/http_prometheus_service.c",
-        "drv/*.c",
+        "user/btscan.c",
         "net/*.c",
         "boot.c",
         "mem.c",
@@ -11,13 +10,16 @@
         "pico_cyw43_arch_lwip_poll",
         "pico_stdlib",
         "pico_multicore",
-        "pico_util"
+        "pico_util",
+        "pico_btstack_ble",
+        "pico_btstack_cyw43"
     ],
-    "board": "pico_w",
+    "board": "pico2_w",
     "clangd": {
         "includes": [
             "{{PICO_SDK}}/lib/lwip/src/include",
             "{{PICO_SDK}}/lib/cyw43-driver/src",
+            "{{PICO_SDK}}/lib/btstack/src",
             "{{PICO_SDK}}/build/generated/pico_base"
         ],
         "flags": [
@@ -26,9 +28,8 @@
         ],
         "defines": {
             "PICO_CYW43_ARCH_POLL": "1",
-            "PICO_BOARD": "pico_w",
-            "PICO_PLATFORM": "rp2040",
-            "PICO_RP2040": "1"
+            "PICO_BOARD": "pico2_w",
+            "PICO_PLATFORM": "rp2350-arm-s"
         }
     }
 }

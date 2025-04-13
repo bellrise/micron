@@ -26,7 +26,7 @@ for drvfile in $(find src/drv -type f -name '*.c'); do
     wb=$(drvvalue $drvfile DRV_WRITE)
     [ -z "$drv" ] && continue
 
-    echo "extern struct drv drv_${drv}_decl;"
+    echo "extern struct drv drv_${drv}_decl __attribute__((weak));"
     ndecls=$(($ndecls + 1))
 done
 
